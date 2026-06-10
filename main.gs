@@ -1,33 +1,13 @@
-// FIXME: LINE Messenging API Token
-const CHANNEL_ACCESS_TOKEN = '';
-// FIXME: LINE Group ID, get from api response
-const GROUP_ID = '';
-
-// FIXME: Google Sheet ID and sheet name
-const SHEET_ID = '';
-const SHEET_NAME = '';
-
-// Constants
-const MAX_NUMBERS_OF_MEMBERS = 18;
-const ADD_REX = /^\+(\d+)$/g;
-const REMOVE_REX = /^\-(\d+)$/g;
-
-// Strings
-const REACHED_MAXIMUM_OPACITY = '已額滿, 下次請早';
-const CANNOT_ADD_MORE_THAN_ONE = '現在只開放給社團成員 +1';
-
-// Log to another sheet
-/*
 function _LogToSheet(username, token, msg) {
   const spreadSheet = SpreadsheetApp.openById(SHEET_ID);
-  const sheet = spreadSheet.getSheetByName("Log");
+  const sheet = spreadSheet.getSheetByName(LOG_SHEET_NAME);
   if (!sheet) {
+    return;
   }
   const currentListRow = sheet.getLastRow();
   const v = `${username}/${token}: [${msg}]`;
   sheet.getRange(currentListRow + 1, 1, 1).setValue(v);
 }
-*/
 
 function _openSheet() {
   const spreadSheet = SpreadsheetApp.openById(SHEET_ID);
@@ -39,14 +19,13 @@ function _openSheet() {
 }
 
 function _getDayAndHours() {
-  const now = Utilities.formatDate(new Date(), 'Asia/Taipei', 'MMMM dd, yyyy HH:mm:ss Z');
+  const now = Utilities.formatDate(new Date(), TIMEZONE, DATETIME_FORMAT);
   const taipeiNow = new Date(now);
   return { day: taipeiNow.getDay(), hours: taipeiNow.getHours() };
 };
 
-// Get next play date, following will get date for next Thursday
 function _getThurDate() {
-  const nowStr = Utilities.formatDate(new Date(), 'Asia/Taipei', 'MMMM dd, yyyy HH:mm:ss Z');
+  const nowStr = Utilities.formatDate(new Date(), TIMEZONE, DATETIME_FORMAT);
   const targetDate = new Date(nowStr);
   const nowDay = targetDate.getDay();
   let originDay = nowDay;
@@ -63,9 +42,12 @@ function _getThurDate() {
 
 function _addToSheet(username, number) {
   if (number < 1) {
-    return;
+    return { msg: MSG_INPUT_ADD_INVALID };
   }
   const sheet = _openSheet();
+  if (!sheet) {
+    return { msg: MSG_SHEET_NOT_FOUND };
+  }
 
   const currentListRow = sheet.getLastRow();
   if (currentListRow === MAX_NUMBERS_OF_MEMBERS) {
@@ -73,7 +55,6 @@ function _addToSheet(username, number) {
   }
 
   const { day, hours } = _getDayAndHours();
-  // FIXME: you can only add friends after certain day
   if ((day === 4 && hours > 21) || (day > 4 && day < 7) || day === 0) {
     const isExisted = _getReserveList().some(item => item === username);
     if (isExisted || number > 1) {
@@ -86,14 +67,13 @@ function _addToSheet(username, number) {
   const newValues = new Array(addableNumber).fill([username]);
   sheet.getRange(currentListRow + 1, 1, addableNumber).setValues(newValues);
   const totalCount = sheet.getLastRow();
-  let msg = `已成功報名 ${addableNumber} 個名額, 總人數: ${totalCount}`;
+  let msg = Utilities.formatString(MSG_SIGNUP_SUCCESS, username, addableNumber, totalCount);
   if (totalCount === MAX_NUMBERS_OF_MEMBERS) {
-    msg += `\n本周已滿 ${MAX_NUMBERS_OF_MEMBERS} 人!`;
+    msg += `\n${Utilities.formatString(MSG_WEEKLY_FULL, MAX_NUMBERS_OF_MEMBERS)}`;
   }
   return { msg };
 }
 
-// Get current list
 function _getReserveList() {
   const sheet = _openSheet();
   if (sheet.getLastRow() === 0 ) {
@@ -107,9 +87,12 @@ function _getReserveList() {
 
 function _removeFromList(username, number) {
   if (number < 1) {
-    return;
+    return { msg: MSG_INPUT_REMOVE_INVALID };
   }
   const sheet = _openSheet();
+  if (!sheet) {
+    return { msg: MSG_SHEET_NOT_FOUND };
+  }
   let i;
   for (i = 0; i < number; i++) {
     const list = _getReserveList();
@@ -119,18 +102,17 @@ function _removeFromList(username, number) {
     }
     sheet.deleteRow(idx + 1);
   }
-  return { msg: `已移除 ${i} 個名額, 總人數: ${sheet.getLastRow()}` };
+  return { msg: Utilities.formatString(MSG_REMOVE_SUCCESS, username, i, sheet.getLastRow()) };
 }
 
-// Hook call by Google App Script Trigger
 function doNotifyFriendsAddable() {
   const thurDay = _getThurDate();
   const replyMessage = [{
     type: 'text',
-    text: `[ 本期 ${thurDay} 開放幫朋友報名囉 ]`,
+    text: Utilities.formatString(MSG_NOTIFY_FRIEND_ADDABLE, thurDay),
   }];
 
-  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+  UrlFetchApp.fetch(LINE_PUSH_API_URL, {
     'headers': {
       'Content-Type': 'application/json; charset=UTF-8',
       'Authorization': 'Bearer ' + CHANNEL_ACCESS_TOKEN,
@@ -143,19 +125,14 @@ function doNotifyFriendsAddable() {
   });
 }
 
-// Hook call by Google App Script Trigger
 function doReset() {
   const sheet = _openSheet();
   sheet.getDataRange().clearContent();
 
   const thurDay = _getThurDate();
+  const replyMessage = _buildResetReplyMessage(thurDay);
 
-  const replyMessage = [{
-    type: 'text',
-    text: `[ 本期 ${thurDay} 開放報名 ]`,
-  }];
-
-  UrlFetchApp.fetch('https://api.line.me/v2/bot/message/push', {
+  UrlFetchApp.fetch(LINE_PUSH_API_URL, {
     'headers': {
       'Content-Type': 'application/json; charset=UTF-8',
       'Authorization': 'Bearer ' + CHANNEL_ACCESS_TOKEN,
@@ -171,11 +148,11 @@ function doReset() {
 function _getUsername(eventType, userId, groupId) {
   let nameUrl;
   switch (eventType) {
-    case "user":
-      nameUrl = "https://api.line.me/v2/bot/profile/" + userId;
+    case EVENT_TYPE_USER:
+      nameUrl = LINE_USER_PROFILE_API_URL + userId;
       break;
-    case "group":
-      nameUrl = "https://api.line.me/v2/bot/group/" + groupId + "/member/" + userId;
+    case EVENT_TYPE_GROUP:
+      nameUrl = LINE_GROUP_PROFILE_API_PREFIX + groupId + LINE_GROUP_PROFILE_API_MEMBER_PATH + userId;
       break;
   }
 
@@ -188,16 +165,16 @@ function _getUsername(eventType, userId, groupId) {
         "Content-Type": "application/json"
       },
     });
-    const namedata = JSON.parse(response);
+    const namedata = JSON.parse(response.getContentText());
     return namedata.displayName;
   }
   catch {
-    return "not avaliable";
+    return MSG_USERNAME_UNAVAILABLE;
   }
 }
 
 function _sendResponse(replyToken, msg) {
-  const url = 'https://api.line.me/v2/bot/message/reply';
+  const url = LINE_REPLY_API_URL;
   const replyMessage = [{
     "type": "text",
     "text": msg
@@ -215,40 +192,105 @@ function _sendResponse(replyToken, msg) {
   });
 }
 
+function _buildReserveListMessage() {
+  const reserveList = _getReserveList();
+  const thurDay = _getThurDate();
+  let listMsg = Utilities.formatString(MSG_LIST_HEADER, thurDay, reserveList.length);
+  reserveList.forEach((name, idx) => {
+    listMsg += `${idx + 1}. ${name}\n`;
+  });
+  return listMsg;
+}
+
+function _getPostbackAction(postbackData) {
+  if (!postbackData) {
+    return '';
+  }
+
+  const raw = String(postbackData).trim();
+  const lowerRaw = raw.toLowerCase();
+  if (lowerRaw === POSTBACK_ACTION_ADD || lowerRaw === POSTBACK_ACTION_REMOVE || lowerRaw === POSTBACK_ACTION_LIST) {
+    return lowerRaw;
+  }
+
+  // Support JSON style payloads like {"action":"add"}
+  if (raw.startsWith('{') && raw.endsWith('}')) {
+    try {
+      const obj = JSON.parse(raw);
+      if (obj && obj.action) {
+        return String(obj.action).trim().toLowerCase();
+      }
+    } catch {
+    }
+  }
+
+  const parts = raw.split('&');
+  for (let i = 0; i < parts.length; i++) {
+    const kv = parts[i].split('=');
+    if (kv[0] === 'action') {
+      return kv[1] ? decodeURIComponent(kv[1]).trim().toLowerCase() : '';
+    }
+  }
+  return '';
+}
+
+function _handlePostBack(replyToken, username, postbackData) {
+  const action = _getPostbackAction(postbackData);
+
+  if (action === POSTBACK_ACTION_ADD) {
+    const resp = _addToSheet(username, 1);
+    _sendResponse(replyToken, resp && resp.msg ? resp.msg : MSG_POSTBACK_ADD_FAILED);
+
+  } else if (action === POSTBACK_ACTION_REMOVE) {
+    const resp = _removeFromList(username, 1);
+    _sendResponse(replyToken, resp && resp.msg ? resp.msg : MSG_POSTBACK_REMOVE_FAILED);
+
+  } else if (action === POSTBACK_ACTION_LIST) {
+    _sendResponse(replyToken, _buildReserveListMessage());
+  } else {
+    _sendResponse(replyToken, `${MSG_UNKNOWN_POSTBACK_PREFIX}${postbackData}`);
+  }
+}
+
+function _handleMessage(replyToken, username, userMessage) {
+  if (([...userMessage.matchAll(ADD_REX)]).length > 0) {
+    /* Add */
+    const found = [...userMessage.matchAll(ADD_REX)];
+    const resp = _addToSheet(username, parseInt(found[0][1], 10));
+    _sendResponse(replyToken, resp.msg);
+
+  } else if (([...userMessage.matchAll(REMOVE_REX)]).length > 0) {
+    /* Remove */
+    const found = [...userMessage.matchAll(REMOVE_REX)];
+    const resp = _removeFromList(username, parseInt(found[0][1], 10));
+    _sendResponse(replyToken, resp.msg);
+
+  } else if (userMessage === COMMAND_LIST) {
+    /* List */
+    _sendResponse(replyToken, _buildReserveListMessage());
+  }
+}
+
 function doPost(e) {
   const msg = JSON.parse(e.postData.contents);
+  const event = msg.events && msg.events[0];
 
-  const replyToken = msg.events[0].replyToken;
-  const userId = msg.events[0].source.userId;
-  const groupId = msg.events[0].source.groupId;
-  const userMessage = msg.events[0].message.text;
-  const eventType = msg.events[0].source.type;
-  const username = _getUsername(eventType, userId, groupId);
-
-  if (typeof replyToken === 'undefined') {
+  if (!event || typeof event.replyToken === 'undefined') {
     return;
-  };
+  }
 
-  _LogToSheet(username, replyToken, userMessage);
-  if ((found = [...userMessage.matchAll(ADD_REX)]).length > 0) {
-    /* ADD */
-    const resp = _addToSheet(username, parseInt(found[0][1]));
-    _sendResponse(replyToken, resp.msg);
+  const replyToken = event.replyToken;
+  const userId = event.source && event.source.userId;
+  const groupId = event.source && event.source.groupId;
+  const userMessage = event.message && event.message.type === MESSAGE_TYPE_TEXT ? event.message.text : '';
+  const postbackData = event.postback && event.postback.data ? event.postback.data : '';
+  const eventType = event.source && event.source.type;
+  const username = _getUsername(eventType, userId, groupId);
+  _LogToSheet(username, replyToken, postbackData || userMessage);
 
-  } else if ((found = [...userMessage.matchAll(REMOVE_REX)]).length > 0) {
-    /* Remove */
-    const resp = _removeFromList(username, parseInt(found[0][1]));
-    _sendResponse(replyToken, resp.msg);
-
-  } else if (userMessage === '名單') {
-    const reserveList = _getReserveList();
-
-    let msg = `[ 本周 ${_getThurDate()} 打球名單 ]\n已報名人數: ${reserveList.length}\n`;
-    reserveList.forEach((name, idx) => {
-      msg += `${idx + 1}. ${name}\n`;
-    });
-    _sendResponse(replyToken, msg);
-
-  } else {
+  if (event.type === EVENT_TYPE_POSTBACK) {
+    _handlePostBack(replyToken, username, postbackData);
+  } else if (event.type === EVENT_TYPE_MESSAGE && event.message && event.message.type === MESSAGE_TYPE_TEXT) {
+    _handleMessage(replyToken, username, userMessage);
   }
 }
